@@ -1,0 +1,244 @@
+---
+title: "Processing Kraken2's output files into a phyloseq object"
+author: "Isabel Erickson"
+date: "6/04/2019"
+output: html_document
+---
+
+##Overview
+
+The process_kraken() function takes kraken2 read-by-read output files and processes them into a phyloseq object. The object  contains:
+
+* tax table 
+* OTU table
+ 
+process_kraken() takes the following arguments:
+
+* Directory that output files are located in. All files in the directory will be processed.
+* A "suffix" of the file names.
+
+Samples in the OTU table will be named based on the file names. 
+
+The phyloseq will include unclassified reads under the TaxID 0.
+
+When Kraken hasn't been able to assign all of the reads at a given taxonomic level (i.e. family) to more specific taxonomic levels (i.e. genus and species), the taxa table is filled in with NAs. I've replaced these NAs with the parent node, so the genus and species would be filled in with the name of the family. 
+
+Without filling in NAs, your tax table might look like this:
+
+superkingdom|phylum|class|order|family|genus|species
+-----|-----|------|-------|-----|----|------|------
+Bacteria|Firmicutes|Bacilli|Bacillales|Staphylococceae|Staphylococcus|Staphylococcus epidermidis
+Bacteria|Firmicutes|Bacilli|Bacillales|Staphylococceae|Staphylococcus|NA
+Bacteria|Firmicutes|Bacilli|Bacillales|Staphylococceae|NA|NA
+
+After NAs are filled in, it would look like this:
+
+superkingdom|phylum|class|order|family|genus|species
+-----|-----|------|-------|-----|----|------|------
+Bacteria|Firmicutes|Bacilli|Bacillales|Staphylococceae|Staphylococcus|Staphylococcus epidermidis
+Bacteria|Firmicutes|Bacilli|Bacillales|Staphylococceae|Staphylococcus|Staphylococcus
+Bacteria|Firmicutes|Bacilli|Bacillales|Staphylococceae|Staphylococceae|Staphylococceae
+
+
+##Libraries
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+library(phyloseq);library(plyr);library(reshape2);library(stringr);library(gridExtra);library(dplyr);library(taxonomizr);library(zoo);library(readr);library(fs)
+```
+Print session information (version, platform, packages)
+```{r}
+sessionInfo()
+```
+##Function Definition
+Below is the code for process_kraken(), including comments that explain what the code is actually doing.
+
+As I mentioned before, one of the arguments for process_kraken() is a "suffix" for your filenames. process_kraken() uses this suffix to name samples. If your files are named METXXXX.out, the suffix would be ".out". If your files are named METXXX.kraken.out, you can change the suffix to be ".kraken.out". In both cases your samples would then be named METXXXX. If you didn't change the suffix, the samples would be named METXXXX.kraken.
+
+process_kraken depends on the following functions that I've defined: build_preotu_table(), build_tax_table(), and fill_nas(). 
+```{r, eval=FALSE}
+process_kraken <- function(location, suffix) {
+  allpreotu <-  data.frame(V3=numeric(), Count=numeric(), Sample=character())
+  filelist <- as.vector(dir_ls(location))
+  ### this for loop loads each output file and formats it so that it can be added to a preotu table
+  for (file in filelist) {
+    outtable <- as.data.frame(read_tsv(file, col_names=c("V1", "V2", "V3", "V4", "V5"), col_types="cciic"))
+    
+    ## these lines separate classified and unclassified reads into two dataframes and create a pre-OTU table with three columns: the reference ID each read matched to, a tally for each read, and the name of the sample the read came from
+    unclassified <- subset(outtable, V1 == "U")
+    classified <- subset(outtable, V1 =="C")
+    unclassN <- nrow(unclassified)
+    preotu <- build_preotu_table(classified, unclassN, file, suffix)
+    
+    ## adds data from each file to one large table
+    allpreotu <- rbind(allpreotu, preotu)
+  }
+  
+  ## aggregates the large table so that each ReferenceID only occurs once in the table
+  agg_otu <- aggregate(allpreotu$Count, by=list(allpreotu$V3, allpreotu$Sample), FUN=sum)
+  
+  ## the following lines cast the aggregated table into an OTU table and fine-tune the formatting
+  castotu <- dcast(agg_otu, Group.1 ~ Group.2)
+  rownames(castotu) <- castotu$Group.1
+  otu <- castotu[-c(1)]
+  otu[is.na(otu)] <- 0
+  otu <- otu_table(otu, taxa_are_rows = TRUE)
+  
+  ## build_tax_table() takes the OTU table and builds a taxa table using taxonomizr. The OTU table and the taxa table are converted to a single phyloseq object which is returned as the output of process_kraken()
+  tax <- build_tax_table(otu)
+  phyloseq_kraken <- phyloseq(otu, tax)
+}
+```
+##Supporting functions
+
+This section defines the functions I've written that process_kraken() depends on: 
+
+* build_preotu_table()
+* build_tax_table()
+* fill_nas()
+
+Note that build_tax_table() can be called outside of process_kraken() with any phyloseq OTU table as an argument.
+```{r, eval=FALSE}
+## The arguments for build_preotu_table() are: a table of classified reads from a file, the number of unclassified reads in that file, the name of the file, and the "suffix" on the file: whatever portion of the file follows the sample name . It returns a pre-OTU table with three columns: the reference ID each read matched to, a tally for each read, and the name of the sample the read came from. This format allows aggregation into a table that can then be cast into an OTU format.
+build_preotu_table <- function(classified, unclass, file, ex) {
+  preotu <- as.data.frame(classified$V3)
+  names(preotu) <- "V3"
+  preotu["Count"] <- 1
+  dfu <- data.frame(0, unclass)
+  names(dfu) <- c("V3", "Count")
+  preotu <- rbind(preotu, dfu)
+  vector <- unlist(strsplit(file, "/"))
+  name <- vector[length(vector)]
+  samplefile <- unlist(strsplit(name, ".out"))
+  preotu["Sample"] <- samplefile
+  return(preotu)
+}
+
+## build_tax_table() creates a taxa table by extracting the taxa_names from an OTU table (if the taxa_names are NCBI tax IDs). If you have an OTU table phyloseq object, you can use this function to build a taxa table from it by calling it outside of process_kraken(). build_tax_table() depends on fill_nas().
+build_tax_table <- function(otutable){
+  refs <- taxa_names(otutable)
+  desiredtaxa = c("superkingdom", "phylum", "class", "order", "family","genus", "species")
+  ## Builds
+  tax = getTaxonomy(refs, sqlFile = "/data/Segrelab/Isabel/kraken_tutorial/nameNode.sqlite", desiredTaxa = desiredtaxa)
+  TaxTable = data.frame(tax)
+  TaxTable <- fill_nas(TaxTable, length(desiredtaxa))
+  TaxTable.m <- as.matrix(TaxTable)
+  taxtable <- tax_table(TaxTable.m)
+  taxa_names(taxtable) <- refs
+  return(taxtable)
+}
+### fills NAs in the tax table. NAs come from unclassified reads and reads that were partially classified (i.e. to the family level)
+fill_nas <- function(taxtable, len){
+  t.table <- t(as.data.frame(taxtable))
+  t.table[1:len] <- "Unclassified"
+  filled <- na.locf(t.table)
+  taxtable <- t(filled)
+}
+```
+##Building only an OTU table
+
+This is very similar to the process_kraken() function but it won't build a taxa table. If you don't have taxonomizr and its dependent files downloaded or if taxonomizr is broken, you can still build an OTU table using this function!
+```{r, eval=FALSE}
+build_kraken_otu <- function(location, suffix) {
+  allpreotu <-  data.frame(V3=numeric(), Count=numeric(), Sample=character())
+  filelist <- as.vector(dir_ls(location))
+  
+  ### this for loop loads each output file and formats it so that it can be added to a preotu table
+  for (file in filelist) {
+    outtable <- as.data.frame(read_tsv(file, col_names=c("V1", "V2", "V3", "V4", "V5"), col_types="cciic"))
+    
+    ## these lines separate classified and unclassified reads into two dataframes and create a pre-OTU table with three columns: the reference ID each read matched to, a tally for each read, and the name of the sample the read came from
+    unclassified <- subset(outtable, V1 == "U")
+    classified <- subset(outtable, V1 =="C")
+    unclassN <- nrow(unclassified)
+    preotu <- build_preotu_table(classified, unclassN, file, suffix)
+    
+    ## adds data from each file to one large table
+    allpreotu <- rbind(allpreotu, preotu)
+  }
+  
+  ## aggregates the large table so that each ReferenceID only occurs once in the table 
+  agg_otu <- aggregate(allpreotu$Count, by=list(allpreotu$V3, allpreotu$Sample), FUN=sum)
+  
+  ## the following lines cast the aggregated table into an OTU table and fine-tune the formatting
+  castotu <- dcast(agg_otu, Group.1 ~ Group.2)
+  rownames(castotu) <- castotu$Group.1
+  otu <- castotu[-c(1)]
+  otu[is.na(otu)] <- 0
+  otu <- otu_table(otu, taxa_are_rows = TRUE)
+}
+## The arguments for build_preotu_table() are: a table of classified reads from a file, the number of unclassified reads in that file, and the name of the file. It returns a pre-OTU table with three columns: the reference ID each read matched to, a tally for each read, and the name of the sample the read came from. This format allows aggregation into a table that can then be cast into an OTU format.
+build_preotu_table <- function(classified, unclass, file, ex) {
+  preotu <- as.data.frame(classified$V3)
+  names(preotu) <- "V3"
+  preotu["Count"] <- 1
+  dfu <- data.frame(0, unclass)
+  names(dfu) <- c("V3", "Count")
+  preotu <- rbind(preotu, dfu)
+  vector <- unlist(strsplit(file, "/"))
+  name <- vector[length(vector)]
+  samplefile <- unlist(strsplit(name, ".out"))
+  preotu["Sample"] <- samplefile
+  return(preotu)
+}
+```
+##Example usage:
+
+I made a directory on biowulf that contains everything you need to run my functions and to replicate this example. The directory is "/data/Segrelab/Isabel/kraken_tutorial/".
+
+Here's a source file for all of the functions I've written:
+```{r}
+source("/data/Segrelab/Isabel/kraken_tutorial/process_kraken_functions.R")
+```
+
+All of these functions use kraken2's standard read-by-read output format. This is the output that kraken produces if you don't use the --report flag in the command line. This output contains a row for each sequence processed by Kraken, whether or not it was classified. For each sequence, it tells you:
+
+* If the read was classified
+* The sequence ID
+* The taxonomy ID the read was assigned to (0 if unassigned)
+* The length of the read
+* A list of taxonomy IDs that each *k*-mer in the sequence mapped to
+
+Use this format if you want to know where every read goes, what happened to a particular read, or about the LCA mapping of each *k*-mer in your sequences. I't's've found this format particularly useful for projects looking at unmapped reads. You can read more about this format [here](https://ccb.jhu.edu/software/kraken2/index.shtml?t=manual#standard-kraken-output-format). 
+This is the file format that these functions will be able to read.
+
+Here's what this format looks like:
+```{r}
+example <- as.data.frame(read_tsv("/data/Segrelab/Isabel/kraken_tutorial/data/MET0200.clipped.out", col_names=c("V1", "V2", "V3", "V4", "V5")))
+head(example)
+```
+###Processing
+
+Ok, now we can actually process a little data. The data that I gave you is very small: it's the first 1000 lines of output from classifying two mock community samples (MET0200 and MET1687) and two healthy volunteer samples (MET1950 and MET1951) using the Kraken2 equivalent of the 2018 Clinical Pathoscope database.
+
+First, set a variable that points to the directory that our data is in. You can also check what's in the directory.
+```{r}
+directory <- "/data/Segrelab/Isabel/kraken_tutorial/data"
+dir_ls(directory)
+```
+Now we use the process_kraken() function to create a phyloseq from this data:
+```{r}
+phylo <- process_kraken(directory, ".out")
+phylo
+```
+Let's take a look at the phyloseq.
+```{r}
+phylo
+```
+Sample names:
+```{r}
+sample_names(phylo)
+```
+You can see that they were named based on the original names of the files.
+
+Access the taxa table and the OTU table:
+```{r}
+head(tax_table(phylo))
+head(otu_table(phylo))
+```
+Using build_kraken_otu() and build_tax_table() is also easy! build_kraken_otu() uses the same arguments as process_kraken(). build_tax_table() takes an OTU table as an argument. It expects that there are unclassified reads mapped to TaxID 0.
+```{r}
+exotu <- build_kraken_otu(directory, ".out")
+head(exotu)
+
+extax <- build_tax_table(exotu)
+head(extax)
+```
