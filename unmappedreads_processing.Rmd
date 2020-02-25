@@ -1,0 +1,475 @@
+---
+title: "Dark Matter Analysis"
+author: "Isabel Erickson"
+date: "1/8/2019"
+output: html_document
+---
+
+```{r}
+library(phyloseq);library(plyr);library(ggplot2);library(reshape2);library(stringr);library(gridExtra);library(dplyr);library(taxonomizr);library(RColorBrewer)
+#setwd("/Users/ericksonir/darkmatter_data")
+```
+Function for building taxonomy tables out of otu table and assignment method:
+```{r}
+build_tax_table <- function(otutable, assignmentmethod){
+  refs <- taxa_names(otutable)
+  tax = getTaxonomy(refs, sqlFile = "nameNode.sqlite", desiredTaxa =
+                    c("superkingdom", "kingdom", "phylum", "class", "order",
+                      "family","genus", "species"))
+  TaxTable = data.frame(tax)
+  TaxTable["AssignmentMethod"] = assignmentmethod
+  TaxTable.m <- as.matrix(TaxTable)
+  taxtable <- tax_table(TaxTable.m)
+  taxa_names(taxtable) <- refs
+  return(taxtable)
+}
+
+build_tax_table2 <- function(refs, assignmentmethod){
+  tax = getTaxonomy(refs, sqlFile = "nameNode.sqlite", desiredTaxa =
+                    c("superkingdom", "kingdom", "phylum", "class", "order",
+                      "family","genus", "species"))
+  TaxTable = data.frame(tax)
+  TaxTable["AssignmentMethod"] = assignmentmethod
+  TaxTable.m <- as.matrix(TaxTable)
+  taxtable <- tax_table(TaxTable.m)
+  taxa_names(taxtable) <- refs
+  return(taxtable)
+}
+```
+Add taxa to blast table:
+```{r}
+add_taxa_to_blast <- function(blasttable){
+  refs <- blasttable$RefID
+  tax <- getTaxonomy(refs, sqlFile = "nameNode.sqlite", desiredTaxa = c("species"))
+  blasttable["taxa"] <- tax
+  return(blasttable)
+}
+```
+Definition of makeblasttable function:
+```{r}
+build_blast_table <- function(filelist, AssignmentMethod, location) {
+  allblasts <- data.frame(Accession=character(), Length=numeric(), PercentMatch=numeric(), nMismatch=numeric(), nGap=numeric(), Start=numeric(), End=numeric(), evalue=numeric(), bitscore=numeric(), ReferenceID=numeric(), Sample=character())
+  for (file in filelist) {
+    samp <- substring(file, 1, 7)
+    blasttable <- as.data.frame(data.table::fread(paste(location, file, sep = "/"), sep="\t"))
+    row.names(blasttable) <- blasttable$V1
+    blasttable <- blasttable[-c(1)]
+    names(blasttable) <- c("Accession", "Length", "PercentMatch", "nMistmatch", "nGap", "Start", "End", "evalue", "bitscore", "ReferenceID")
+    blasttable["Sample"] <- samp
+    allblasts <- rbind(allblasts, blasttable)
+  }
+  allblasts["AssignmentMethod"] <- AssignmentMethod
+  return(allblasts)
+  }
+```
+Definition of function to make otu tables out of blast table:
+```{r}
+build_otu_table <- function(blast) {
+  preotu <- blast[c(10:12)]
+  preotu["Count"] <- 1
+  pre_otu <- aggregate(preotu$Count, by=list(preotu$ReferenceID, preotu$Sample), FUN=sum)
+  castotu <- dcast(pre_otu, Group.1 ~ Group.2)
+  rownames(castotu) <- castotu$Group.1
+  otu <- castotu[-c(1)]
+  otu[is.na(otu)] <- 0
+  otu <- otu_table(otu, taxa_are_rows = TRUE)
+}
+```
+Definition of function to get taxa/abundance information for accession numbers without a taxa ID:
+```{r}
+na_otu_table <- function(blast) {
+  nas <- subset(blast, ReferenceID == "N/A")
+  nas <- nas[c(1, 11:12)]
+  nas["Count"] <- 1
+  pre_otu <- aggregate(nas$Count, by=list(nas$Accession, nas$Sample), FUN=sum)
+  castotu <- dcast(pre_otu, Group.1 ~ Group.2)
+  rownames(castotu) <- castotu$Group.1
+  accessionotu <- castotu[-c(1)]
+  accessionotu[is.na(accessionotu)] <- 0
+  accessionotu <- otu_table(accessionotu, taxa_are_rows = TRUE)
+}
+```
+Definition of function to build otu tables out of tsvs from Clinpath:
+```{r}
+otu_from_tsvs <- function(filelist, location) {
+  preotu <- data.frame(ReferenceID=numeric(), Reads=numeric(), Sample=character())
+  for (file in filelist) {
+    samp <- substring(file, 1, 7)
+    sampletable <- read.csv(paste(location, file, sep = "/"), header=TRUE, fill=TRUE)
+    names(sampletable) <- c("ReferenceID", "Reads")
+    sampletable <- sampletable[c(1:2)]
+    sampletable["Sample"] <- samp
+    preotu <- rbind(preotu, sampletable)
+  }
+  pre_otu <- aggregate(preotu$Reads, by=list(preotu$ReferenceID, preotu$Sample), FUN=sum)
+  castotu <- dcast(pre_otu, Group.1 ~ Group.2)
+  rownames(castotu) <- castotu$Group.1
+  otu <- castotu[-c(1)]
+  otu[is.na(otu)] <- 0
+  otu <- otu_table(otu, taxa_are_rows = TRUE)
+}
+```
+Make metadata file:
+```{r}
+metadata <- read.csv("~/Desktop/blastwork/Dm.samples.mapping.csv", header=TRUE)
+libIDs <- metadata$LibraryID
+metadata <- sample_data(metadata)
+sample_names(metadata) <- libIDs
+```
+Kraken data:
+```{r}
+kraken_preotu <- as.data.frame(data.table::fread("~/Desktop/kraken.csv"))
+sampleids <- kraken_preotu[1]
+
+write.csv(sampleids, "~/Desktop/kraken.lineages.csv")
+kraken_tax_table <- read.csv("~/Desktop/kraken.lineages.csv")
+kraken_tax_table["taxnames"] <- sampleids
+rownames(kraken_tax_table) <- rownames(kraken_preotu)
+kraken_tax_table <- kraken_tax_table[-c(8)]
+kraken_tax_table_sub <- kraken_tax_table[1965:6410,]
+rownames(kraken_preotu) <- rownames(kraken_tax_table)
+kraken_preotu <- kraken_preotu[-c(1)]
+kraken_preotu_sub <- kraken_preotu[1965:6410,]
+
+kr_tax_table <- tax_table(as.matrix(kraken_tax_table_sub))
+kr_otu <- otu_table(kraken_preotu_sub, taxa_are_rows = TRUE)
+kr_phy <- phyloseq(kr_otu, kr_tax_table, metadata)
+kr_phy <- readRDS("~/Desktop/kr_phy.RDS")
+saveRDS(kr_phy, "~/Desktop/kr_phy.RDS")
+```
+Building and filtering htgs blast tables:
+```{r}
+cp_htgs_filelist <- c("MET0200.UnclassCP.fq.highq.fasta.htgs.out", "MET1687.UnclassCP.fq.highq.fasta.htgs.out", "MET1950.UnclassCP.fq.highq.fasta.htgs.out", "MET1951.UnclassCP.fq.highq.fasta.htgs.out", "MET1952.UnclassCP.fq.highq.fasta.htgs.out", "MET1954.UnclassCP.fq.highq.fasta.htgs.out", "MET1955.UnclassCP.fq.highq.fasta.htgs.out", "MET1956.UnclassCP.fq.highq.fasta.htgs.out", "MET1958.UnclassCP.fq.highq.fasta.htgs.out", "MET1959.UnclassCP.fq.highq.fasta.htgs.out", "MET1960.UnclassCP.fq.highq.fasta.htgs.out", "MET1966.UnclassCP.fq.highq.fasta.htgs.out", "MET1967.UnclassCP.fq.highq.fasta.htgs.out", "MET1968.UnclassCP.fq.highq.fasta.htgs.out", "MET1970.UnclassCP.fq.highq.fasta.htgs.out", "MET1971.UnclassCP.fq.highq.fasta.htgs.out", "MET1972.UnclassCP.fq.highq.fasta.htgs.out", "MET1974.UnclassCP.fq.highq.fasta.htgs.out", "MET1975.UnclassCP.fq.highq.fasta.htgs.out", "MET1976.UnclassCP.fq.highq.fasta.htgs.out", "MET1978.UnclassCP.fq.highq.fasta.htgs.out", "MET1979.UnclassCP.fq.highq.fasta.htgs.out", "MET1980.UnclassCP.fq.highq.fasta.htgs.out", "MET1982.UnclassCP.fq.highq.fasta.htgs.out", "MET1983.UnclassCP.fq.highq.fasta.htgs.out", "MET1984.UnclassCP.fq.highq.fasta.htgs.out", "MET1986.UnclassCP.fq.highq.fasta.htgs.out", "MET1987.UnclassCP.fq.highq.fasta.htgs.out", "MET1988.UnclassCP.fq.highq.fasta.htgs.out", "MET1991.UnclassCP.fq.highq.fasta.htgs.out", "MET1992.UnclassCP.fq.highq.fasta.htgs.out", "MET1993.UnclassCP.fq.highq.fasta.htgs.out")
+k_htgs_filelist <- c("MET0200.Unclass.fq.highq.fasta.htgs.out", "MET1687.Unclass.fq.highq.fasta.htgs.out", "MET1950.Unclass.fq.highq.fasta.htgs.out", "MET1951.Unclass.fq.highq.fasta.htgs.out", "MET1952.Unclass.fq.highq.fasta.htgs.out", "MET1954.Unclass.fq.highq.fasta.htgs.out", "MET1955.Unclass.fq.highq.fasta.htgs.out", "MET1956.Unclass.fq.highq.fasta.htgs.out", "MET1958.Unclass.fq.highq.fasta.htgs.out", "MET1959.Unclass.fq.highq.fasta.htgs.out", "MET1960.Unclass.fq.highq.fasta.htgs.out", "MET1966.Unclass.fq.highq.fasta.htgs.out", "MET1967.Unclass.fq.highq.fasta.htgs.out", "MET1968.Unclass.fq.highq.fasta.htgs.out", "MET1970.Unclass.fq.highq.fasta.htgs.out", "MET1971.Unclass.fq.highq.fasta.htgs.out", "MET1972.Unclass.fq.highq.fasta.htgs.out", "MET1974.Unclass.fq.highq.fasta.htgs.out", "MET1975.Unclass.fq.highq.fasta.htgs.out", "MET1976.Unclass.fq.highq.fasta.htgs.out", "MET1978.Unclass.fq.highq.fasta.htgs.out", "MET1979.Unclass.fq.highq.fasta.htgs.out", "MET1980.Unclass.fq.highq.fasta.htgs.out", "MET1982.Unclass.fq.highq.fasta.htgs.out", "MET1983.Unclass.fq.highq.fasta.htgs.out", "MET1984.Unclass.fq.highq.fasta.htgs.out", "MET1986.Unclass.fq.highq.fasta.htgs.out", "MET1987.Unclass.fq.highq.fasta.htgs.out", "MET1988.Unclass.fq.highq.fasta.htgs.out", "MET1991.Unclass.fq.highq.fasta.htgs.out", "MET1992.Unclass.fq.highq.fasta.htgs.out", "MET1993.Unclass.fq.highq.fasta.htgs.out")
+
+cp_htgs_blast <- build_blast_table(cp_htgs_filelist, "htgs","~/Desktop/htgsblast")
+sub_cp_htgs_blast <- subset(cp_htgs_blast, Length >= 50 & PercentMatch >= 90)
+
+k_htgs_blast <- build_blast_table(k_htgs_filelist, "htgs")
+sub_k_htgs_blast <- subset(k_htgs_blast, Length >= 50 & PercentMatch >= 90)
+
+```
+Building and filtering est blast tables:
+```{r}
+cp_est_filelist <- c("MET0200.UnclassCP.fq.highq.fasta.est_others.out", "MET1687.UnclassCP.fq.highq.fasta.est_others.out", "MET1950.UnclassCP.fq.highq.fasta.est_others.out", "MET1951.UnclassCP.fq.highq.fasta.est_others.out", "MET1952.UnclassCP.fq.highq.fasta.est_others.out", "MET1954.UnclassCP.fq.highq.fasta.est_others.out", "MET1955.UnclassCP.fq.highq.fasta.est_others.out", "MET1956.UnclassCP.fq.highq.fasta.est_others.out", "MET1958.UnclassCP.fq.highq.fasta.est_others.out", "MET1959.UnclassCP.fq.highq.fasta.est_others.out", "MET1960.UnclassCP.fq.highq.fasta.est_others.out", "MET1966.UnclassCP.fq.highq.fasta.est_others.out", "MET1967.UnclassCP.fq.highq.fasta.est_others.out",  "MET1968.UnclassCP.fq.highq.fasta.est_others.out", "MET1970.UnclassCP.fq.highq.fasta.est_others.out", "MET1971.UnclassCP.fq.highq.fasta.est_others.out", "MET1972.UnclassCP.fq.highq.fasta.est_others.out", "MET1974.UnclassCP.fq.highq.fasta.est_others.out", "MET1975.UnclassCP.fq.highq.fasta.est_others.out", "MET1976.UnclassCP.fq.highq.fasta.est_others.out", "MET1978.UnclassCP.fq.highq.fasta.est_others.out", "MET1979.UnclassCP.fq.highq.fasta.est_others.out", "MET1980.UnclassCP.fq.highq.fasta.est_others.out", "MET1982.UnclassCP.fq.highq.fasta.est_others.out", "MET1983.UnclassCP.fq.highq.fasta.est_others.out", "MET1984.UnclassCP.fq.highq.fasta.est_others.out", "MET1986.UnclassCP.fq.highq.fasta.est_others.out", "MET1987.UnclassCP.fq.highq.fasta.est_others.out", "MET1988.UnclassCP.fq.highq.fasta.est_others.out", "MET1991.UnclassCP.fq.highq.fasta.est_others.out", "MET1992.UnclassCP.fq.highq.fasta.est_others.out", "MET1993.UnclassCP.fq.highq.fasta.est_others.out")
+k_est_filelist <- c("MET0200.Unclass.fq.highq.fasta.est_others.out", "MET1687.Unclass.fq.highq.fasta.est_others.out", "MET1950.Unclass.fq.highq.fasta.est_others.out", "MET1951.Unclass.fq.highq.fasta.est_others.out", "MET1952.Unclass.fq.highq.fasta.est_others.out", "MET1954.Unclass.fq.highq.fasta.est_others.out", "MET1955.Unclass.fq.highq.fasta.est_others.out", "MET1956.Unclass.fq.highq.fasta.est_others.out", "MET1958.Unclass.fq.highq.fasta.est_others.out", "MET1959.Unclass.fq.highq.fasta.est_others.out", "MET1960.Unclass.fq.highq.fasta.est_others.out", "MET1966.Unclass.fq.highq.fasta.est_others.out", "MET1967.Unclass.fq.highq.fasta.est_others.out",  "MET1968.Unclass.fq.highq.fasta.est_others.out", "MET1970.Unclass.fq.highq.fasta.est_others.out", "MET1971.Unclass.fq.highq.fasta.est_others.out", "MET1972.Unclass.fq.highq.fasta.est_others.out", "MET1974.Unclass.fq.highq.fasta.est_others.out", "MET1975.Unclass.fq.highq.fasta.est_others.out", "MET1976.Unclass.fq.highq.fasta.est_others.out", "MET1978.Unclass.fq.highq.fasta.est_others.out", "MET1979.Unclass.fq.highq.fasta.est_others.out", "MET1980.Unclass.fq.highq.fasta.est_others.out", "MET1982.Unclass.fq.highq.fasta.est_others.out", "MET1983.Unclass.fq.highq.fasta.est_others.out", "MET1984.Unclass.fq.highq.fasta.est_others.out", "MET1986.Unclass.fq.highq.fasta.est_others.out", "MET1987.Unclass.fq.highq.fasta.est_others.out", "MET1988.Unclass.fq.highq.fasta.est_others.out", "MET1991.Unclass.fq.highq.fasta.est_others.out", "MET1992.Unclass.fq.highq.fasta.est_others.out", "MET1993.Unclass.fq.highq.fasta.est_others.out")
+
+cp_est_blast <- build_blast_table(cp_est_filelist, "est", "~/Desktop/estblasts")
+sub_cp_est_blast <- subset(cp_est_blast, Length >= 50 & PercentMatch >= 90)
+write.csv(sub_cp_est_blast, "~/Desktop/sub_cp_est_blast.csv")
+
+k_est_blast <- build_blast_table(filelist, "est")
+sub_k_est_blast <- subset(k_est_blast, Length >= 50 & PercentMatch >= 90)
+
+```
+Build and filter nt blast tables:
+```{r}
+k_nt_filelist <- c("MET0200.UnclassCP.fq.highq.fasta.nt.out", "MET1687.UnclassCP.fq.highq.fasta.nt.out", "MET1950.UnclassCP.fq.highq.fasta.nt.out", "MET1951.UnclassCP.fq.highq.fasta.nt.out", "MET1952.UnclassCP.fq.highq.fasta.nt.out", "MET1954.UnclassCP.fq.highq.fasta.nt.out", "MET1955.UnclassCP.fq.highq.fasta.nt.out", "MET1956.UnclassCP.fq.highq.fasta.nt.out", "MET1958.UnclassCP.fq.highq.fasta.nt.out", "MET1959.UnclassCP.fq.highq.fasta.nt.out", "MET1960.UnclassCP.fq.highq.fasta.nt.out", "MET1966.UnclassCP.fq.highq.fasta.nt.out", "MET1967.UnclassCP.fq.highq.fasta.nt.out",  "MET1968.UnclassCP.fq.highq.fasta.nt.out", "MET1970.UnclassCP.fq.highq.fasta.nt.out", "MET1971.UnclassCP.fq.highq.fasta.nt.out", "MET1972.UnclassCP.fq.highq.fasta.nt.out", "MET1974.UnclassCP.fq.highq.fasta.nt.out", "MET1975.UnclassCP.fq.highq.fasta.nt.out", "MET1976.UnclassCP.fq.highq.fasta.nt.out", "MET1978.UnclassCP.fq.highq.fasta.nt.out", "MET1979.UnclassCP.fq.highq.fasta.nt.out", "MET1980.UnclassCP.fq.highq.fasta.nt.out", "MET1982.UnclassCP.fq.highq.fasta.nt.out", "MET1983.UnclassCP.fq.highq.fasta.nt.out", "MET1984.UnclassCP.fq.highq.fasta.nt.out", "MET1986.UnclassCP.fq.highq.fasta.nt.out", "MET1987.UnclassCP.fq.highq.fasta.nt.out", "MET1988.UnclassCP.fq.highq.fasta.nt.out", "MET1991.UnclassCP.fq.highq.fasta.nt.out", "MET1992.UnclassCP.fq.highq.fasta.nt.out", "MET1993.UnclassCP.fq.highq.fasta.nt.out")
+cp_nt_filelist <- c("MET0200.UnclassCP.fq.highq.fasta.nt.out", "MET0200.2.UnclassCP.fq.highq.fasta.nt.out", "MET1687.UnclassCP.fq.highq.fasta.nt.out", "MET1950.UnclassCP.fq.highq.fasta.nt.out",  "MET1958.UnclassCP.fq.highq.fasta.nt.out", "MET1959.UnclassCP.fq.highq.fasta.nt.out", "MET1960.UnclassCP.fq.highq.fasta.nt.out", "MET1970.UnclassCP.fq.highq.fasta.nt.out", "MET1971.UnclassCP.fq.highq.fasta.nt.out", "MET1972.UnclassCP.fq.highq.fasta.nt.out", "MET1974.UnclassCP.fq.highq.fasta.nt.out", "MET1975.UnclassCP.fq.highq.fasta.nt.out", "MET1978.UnclassCP.fq.highq.fasta.nt.out", "MET1980.UnclassCP.fq.highq.fasta.nt.out", "MET1986.UnclassCP.fq.highq.fasta.nt.out", "MET1987.UnclassCP.fq.highq.fasta.nt.out", "MET1988.UnclassCP.fq.highq.fasta.nt.out", "MET1991.UnclassCP.fq.highq.fasta.nt.out")
+
+cp_nt_blast <- build_blast_table(cp_nt_filelist, "nt", "~/Desktop/ntblasts2")
+sub_cp_nt_blast <- subset(cp_nt_blast, Length >= 50 & PercentMatch >= 90)
+write.csv(sub_cp_nt_blast, "~/Desktop/sub_cp_nt_blast.csv")
+
+k_nt_blast <- build_blast_table(k_nt_filelist, "nt")
+sub_k_nt_blast <- subset(k_nt_blast, Length >= 50 & PercentMatch >= 90)
+
+```
+Build and filter viral blast tables:
+```{r}
+cp_viral_filelist <- c("MET0200.UnclassCP.fq.highq.fasta.viral.out", "MET1687.UnclassCP.fq.highq.fasta.viral.out", "MET1950.UnclassCP.fq.highq.fasta.viral.out", "MET1951.UnclassCP.fq.highq.fasta.viral.out", "MET1952.UnclassCP.fq.highq.fasta.viral.out", "MET1954.UnclassCP.fq.highq.fasta.viral.out", "MET1955.UnclassCP.fq.highq.fasta.viral.out", "MET1956.UnclassCP.fq.highq.fasta.viral.out", "MET1958.UnclassCP.fq.highq.fasta.viral.out", "MET1959.UnclassCP.fq.highq.fasta.viral.out", "MET1960.UnclassCP.fq.highq.fasta.viral.out", "MET1966.UnclassCP.fq.highq.fasta.viral.out", "MET1967.UnclassCP.fq.highq.fasta.viral.out", "MET1968.UnclassCP.fq.highq.fasta.viral.out", "MET1970.UnclassCP.fq.highq.fasta.viral.out", "MET1971.UnclassCP.fq.highq.fasta.viral.out", "MET1972.UnclassCP.fq.highq.fasta.viral.out", "MET1974.UnclassCP.fq.highq.fasta.viral.out", "MET1975.UnclassCP.fq.highq.fasta.viral.out", "MET1976.UnclassCP.fq.highq.fasta.viral.out", "MET1978.UnclassCP.fq.highq.fasta.viral.out", "MET1979.UnclassCP.fq.highq.fasta.viral.out", "MET1980.UnclassCP.fq.highq.fasta.viral.out", "MET1982.UnclassCP.fq.highq.fasta.viral.out", "MET1983.UnclassCP.fq.highq.fasta.viral.out", "MET1984.UnclassCP.fq.highq.fasta.viral.out", "MET1986.UnclassCP.fq.highq.fasta.viral.out", "MET1987.UnclassCP.fq.highq.fasta.viral.out", "MET1988.UnclassCP.fq.highq.fasta.viral.out", "MET1991.UnclassCP.fq.highq.fasta.viral.out", "MET1992.UnclassCP.fq.highq.fasta.viral.out", "MET1993.UnclassCP.fq.highq.fasta.viral.out")
+k_viral_filelist <- c("MET0200.Unclass.fq.highq.fasta.viral.out", "MET1687.Unclass.fq.highq.fasta.viral.out", "MET1950.Unclass.fq.highq.fasta.viral.out", "MET1951.Unclass.fq.highq.fasta.viral.out", "MET1952.Unclass.fq.highq.fasta.viral.out", "MET1954.Unclass.fq.highq.fasta.viral.out", "MET1955.Unclass.fq.highq.fasta.viral.out", "MET1956.Unclass.fq.highq.fasta.viral.out", "MET1958.Unclass.fq.highq.fasta.viral.out", "MET1959.Unclass.fq.highq.fasta.viral.out", "MET1960.Unclass.fq.highq.fasta.viral.out", "MET1966.Unclass.fq.highq.fasta.viral.out", "MET1967.Unclass.fq.highq.fasta.viral.out",  "MET1968.Unclass.fq.highq.fasta.viral.out", "MET1970.Unclass.fq.highq.fasta.viral.out", "MET1971.Unclass.fq.highq.fasta.viral.out", "MET1972.Unclass.fq.highq.fasta.viral.out", "MET1974.Unclass.fq.highq.fasta.viral.out", "MET1975.Unclass.fq.highq.fasta.viral.out", "MET1976.Unclass.fq.highq.fasta.viral.out",  "MET1978.Unclass.fq.highq.fasta.viral.out", "MET1979.Unclass.fq.highq.fasta.viral.out", "MET1980.Unclass.fq.highq.fasta.viral.out", "MET1982.Unclass.fq.highq.fasta.viral.out", "MET1983.Unclass.fq.highq.fasta.viral.out", "MET1984.Unclass.fq.highq.fasta.viral.out", "MET1986.Unclass.fq.highq.fasta.viral.out", "MET1987.Unclass.fq.highq.fasta.viral.out", "MET1988.Unclass.fq.highq.fasta.viral.out", "MET1991.Unclass.fq.highq.fasta.viral.out", "MET1992.Unclass.fq.highq.fasta.viral.out", "MET1993.Unclass.fq.highq.fasta.viral.out")
+
+cp_viral_blast <- build_blast_table(cp_viral_filelist, "cp_viral", "~/Desktop/viralblasts")
+sub_cp_viral_blast <- subset(cp_viral_blast, Length >= 50 & PercentMatch >= 90)
+
+k_viral_blast <- build_blast_table(k_viral_filelist, "k_viral", "~/Desktop/viralblasts")
+sub_k_viral_blast <- subset(k_viral_blast, Length >= 50 & PercentMatch >= 90)
+###Filtering parameters were determined after discussing with Sean what length and percent identity would be helpful for future ClinPath application
+```
+Build clinpath phyloseq object:
+```{r}
+tsv_list <- c("MET0200.nohost-sam-report.csv", "MET1687.nohost-sam-report.csv", "MET1950.nohost-sam-report.csv", "MET1951.nohost-sam-report.csv", "MET1952.nohost-sam-report.csv", "MET1954.nohost-sam-report.csv", "MET1955.nohost-sam-report.csv", "MET1956.nohost-sam-report.csv", "MET1958.nohost-sam-report.csv", "MET1959.nohost-sam-report.csv", "MET1960.nohost-sam-report.csv", "MET1966.nohost-sam-report.csv", "MET1967.nohost-sam-report.csv",  "MET1968.nohost-sam-report.csv", "MET1970.nohost-sam-report.csv", "MET1971.nohost-sam-report.csv", "MET1972.nohost-sam-report.csv", "MET1974.nohost-sam-report.csv", "MET1975.nohost-sam-report.csv", "MET1976.nohost-sam-report.csv",  "MET1978.nohost-sam-report.csv", "MET1979.nohost-sam-report.csv", "MET1980.nohost-sam-report.csv", "MET1982.nohost-sam-report.csv", "MET1983.nohost-sam-report.csv", "MET1984.nohost-sam-report.csv", "MET1986.nohost-sam-report.csv", "MET1987.nohost-sam-report.csv", "MET1988.nohost-sam-report.csv", "MET1991.nohost-sam-report.csv", "MET1992.nohost-sam-report.csv", "MET1993.nohost-sam-report.csv")
+clin_otu <- otu_from_tsvs(tsv_list, "~/Desktop/tsvs/correctcsvs")
+clin_tax <- build_tax_table(clin_otu, "ClinPath")
+clin_phy <- phyloseq(clin_otu, clin_tax, metadata)
+saveRDS(clin_phy, "~/Desktop/clin_phy.RDS")
+```
+Make phyloseqs for nt:
+```{r}
+cp_nt_otu <- build_otu_table(sub_cp_nt_blast)
+cp_nt_tax_table <- build_tax_table(cp_nt_otu, "cp_nt")
+cp_nt_phy <- phyloseq(cp_nt_otu, cp_nt_tax_table, metadata)
+
+k_nt_otu <- build_otu_table(sub_k_nt_blast)
+k_nt_tax_table <- build_tax_table(k_nt_otu, "k_nt")
+k_nt_phy <- phyloseq(k_nt_otu, k_nt_tax_table, metadata)
+```
+Make phyloseqs for htgs:
+```{r}
+cp_htgs_otu_sub <- build_otu_table(sub_cp_htgs_blast)
+cp_htgs_tax_table_sub <- build_tax_table(cp_htgs_otu_sub, "cp_htgs")
+cp_htgs_phy_sub <- phyloseq(cp_htgs_tax_table_sub, cp_htgs_otu_sub, metadata)
+saveRDS(cp_htgs_phy_sub, "~/Desktop/cp_htgs_phy_sub")
+
+cp_htgs_otu <- build_otu_table(cp_htgs_blast)
+cp_htgs_tax_table <- build_tax_table(cp_htgs_otu, "cp_htgs")
+cp_htgs_phy <- phyloseq(cp_htgs_tax_table, cp_htgs_otu, metadata)
+
+k_htgs_otu <- build_otu_table(sub_k_htgs_blast)
+k_htgs_tax_table <- build_tax_table(k_htgs_otu, "k_htgs")
+k_htgs_phy <- phyloseq(k_htgs_tax_table, k_htgs_otu, metadata)
+```
+Make phyloseqs for est:
+```{r}
+cp_est_otu <- build_otu_table(sub_cp_est_blast)
+cp_est_tax_table <- build_tax_table(cp_est_otu, "cp_est")
+cp_est_phy <- phyloseq(cp_est_tax_table, cp_est_otu, metadata)
+saveRDS(cp_est_phy, "~/Desktop/cp_est_phy.RDS")
+
+k_est_otu <- build_otu_table(sub_k_est_blast)
+k_est_tax_table <- build_tax_table(k_est_otu, "k_est")
+k_est_phy <- phyloseq(k_est_tax_table, k_est_otu, metadata)
+```
+Make viral phyloseqs (tax tables, otu tables, full phyloseq)
+```{r}
+cp_viral_otu <- build_otu_table(sub_cp_viral_blast)
+cp_viral_tax_table <- build_tax_table(cp_viral_otu, "cp_viral")
+cp_viral_phy <- phyloseq(cp_viral_tax_table, cp_viral_otu)
+saveRDS(cp_viral_phy, "~/Desktop/cp_viral_phy.RDS")
+
+k_viral_otu <- build_otu_table(sub_k_v_b)
+k_viral_tax_table <- build_tax_table(k_viral_otu, "k_viral")
+k_viral_phy <- phyloseq(k_viral_tax_table, k_viral_otu)
+```
+Deal with NAs in viral data:
+```{r}
+na_otu_table
+na_cp_viral <- subset(sub_cp_v_b, "ReferenceID" == "N/A")
+na_k_viral <- subset(sub_k_v_b, "ReferenceID" == "N/A")
+```
+Show most abundant taxa:
+```{r}
+barplot(sort(taxa_sums(cp_viral_phy), TRUE)[1:N]/nsamples(cp_viral_phy), las=2)
+toptax <- filter(cp_viral_blast, ReferenceID == 10871 | ReferenceID == 574093 | ReferenceID == 321314)
+
+
+ggplot(toptax, aes(x=Length, y=PercentMatch, color=LibraryID)) + geom_point() + facet_grid("ReferenceID")
+ggplot(toptax, aes(x=Start, y=End, color=Sample)) + geom_point() + facet_grid("ReferenceID")
+ggplot(toptax, aes(x=Start)) + geom_histogram() + facet_grid("ReferenceID", scales="free")
+
+
+barplot(sort(taxa_sums(cp_htgs_phy_sub), TRUE)[1:N]/nsamples(cp_htgs_phy_sub), las=2)
+toptax <- filter(cp_htgs_blast, ReferenceID == 9615 | ReferenceID == 4577 | ReferenceID == 112509  | ReferenceID == 295996 | ReferenceID == 663926 | ReferenceID == 4565 | ReferenceID == 3352 | ReferenceID == 51351  | ReferenceID == 37682)
+
+ggplot(toptax, aes(x=Length, y=PercentMatch, color=LibraryID)) + geom_point() + facet_grid("ReferenceID")
+ggplot(toptax, aes(x=Start, y=End, color=Sample)) + geom_point() + facet_grid("ReferenceID")
+ggplot(toptax, aes(x=Start)) + geom_histogram() + facet_grid("ReferenceID", scales="free")
+```
+Filtering cp
+```{r}
+cp = filter_taxa(clin_phy, function(x) sum(x>20) > (0.1*length(x)), TRUE)
+other <- t(as.data.frame(sample_sums(clin_phy) - sample_sums(cp)))
+rownames(other) <- "Other"
+otu <- as.data.frame(otu_table(cp))
+newotu <- rbind(otu, other)
+tax <- tax_table(cp)
+
+p2 <- plot_bar(cp, x="LibraryID", y="Abundance", 
+          fill="phylum") +
+          geom_col(aes(color=phylum, fill = phylum)) + 
+          geom_col(position="fill")
+```
+read phyloseqs etc
+```{r}
+est_phy <- readRDS("~/Desktop/cp_est_phy.RDS")
+kr_phy <- readRDS("~/Desktop/kr_phy.RDS")
+viral_phy <- readRDS("~/Desktop/cp_viral_phy.RDS")
+htgs_phy <- readRDS("~/Desktop/cp_htgs_phy_sub.RDS")
+clin_phy <- readRDS("~/Desktop/blastwork/clin_phy.RDS")
+
+sub_cp_est_blast <- read.csv("~/Desktop/sub_cp_est_blast.csv")
+sub_cp_htgs_blast <- read.csv("~/Desktop/sub_cp_htgs_blast.csv")
+sub_cp_viral_blast <- read.csv("~/Desktop/sub_cp_viral_blast.csv")
+sub_cp_nt_blast <- read.csv("~/Desktop/sub_cp_nt_blast.csv")
+BigBlast <- as.data.frame(data.table::fread("~/Desktop/allblast.csv"))
+
+allblast <- merge_phyloseq(est_phy, viral_phy, htgs_phy, nt_phy)
+
+tax_sums <- as.data.frame(taxa_sums(allblastF))
+medsum <- median(tax_sums$sum)
+meansum <- mean(tax_sums$sum)
+
+#graph histogram to determine appropriate cutoff point
+allblastF2 <- filter_taxa(allblastF, function(x) sum(x) > 500, TRUE)
+
+#get top n most R abundant taxa in phyloseq, return phyloseq
+topR <- function(n, phyloseq) {
+  get.rel.abund <- function(x) {x/sum(x, na.rm = FALSE)}
+  relative <- get.rel.abund(otu_table(phyloseq))
+  topNotus <- names(sort(taxa_sums(relative), TRUE)[1:n])
+  allN <- prune_taxa(topNotus, relative)
+  otu_table(phyloseq) <- allN
+  return(phyloseq)
+}
+
+topR2 <- function(n, phyloseq) {
+  relative = transform_sample_counts(phyloseq, function(x) x/sum(x))
+  topNotus <- names(sort(taxa_sums(relative), TRUE)[1:n])
+  allN <- prune_taxa(topNotus, relative)
+  otu_table(phyloseq) <- allN
+  return(phyloseq)
+}
+
+tax_sums <- as.data.frame(taxa_sums(kr_phy))
+names(tax_sums) <- "sums"
+ggplot(data=tax_sums, x=sums, aes(x=sums)) +geom_histogram(bins=60) + xlim(0, 500) +ylim(0,750)
+
+kr_top <- topR2(2039, kr_phy)
+clin_top <- topR2(1083, clin_phy)
+krcp <- merge_taxa(kr_top, clin_top)
+krvcp <- plot_bar(krcp, x="LibraryID", y="Abundance", 
+          fill="genus") +
+          geom_col(aes(color=genus, fill = genus,
+          position="stack")) + facet_grid(AssignmentMethod~.)
+
+```
+
+```{r}
+
+topA <- function(n, phyloseq) {
+  topNotus <- names(sort(taxa_sums(phyloseq), TRUE)[1:n])
+  allN <- prune_taxa(topNotus, phyloseq)
+  otu_table(phyloseq) <- allN
+  return(phyloseq)
+}
+
+est_phyR <- topR2(20, est_phy)
+viral_phyR <- topR2(100, viral_phy)
+htgs_phyR <- topR2(20, htgs_phy)
+nt_phyR <- topR2(20, nt_phy)
+
+topestR <- plot_bar(est_phyR, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill = species, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Relative Abundance")
+
+tophtgsR <- plot_bar(htgs_phyR, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill = species, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Relative Abundance")
+
+topviralR <- plot_bar(viral_phyR, x="LibraryID", y="Abundance", fill="family") + geom_col(aes(color=family, fill = family, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Relative Abundance")
+
+topntR <- plot_bar(nt_phyR, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill = species, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Relative Abundance")
+
+est_phyA <- topA(20, est_phy)
+viral_phyA <- topA(20, viral_phy)
+htgs_phyA <- topA(20, htgs_phy)
+nt_phyA <- topA(20, nt_phy)
+
+topestA <- plot_bar(est_phyA, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill = species, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Read Count")
+
+topviralA <- plot_bar(viral_phyA, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill = species, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Read Count")
+
+tophtgsA <- plot_bar(htgs_phyA, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill = species, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Read Count")
+
+topntA <- plot_bar(nt_phyA, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill = species, position="stack")) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6)) +ylab("Read Count")
+
+
+p2 <- plot_bar(allblastF2, x="LibraryID", y="Abundance", fill="superkingdom", facet_grid = "AssignmentMethod") + geom_col(aes(color=superkingdom, fill = superkingdom)) + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=6))
+```
+Functions for dealing with blast tables of one species:
+```{r}
+format_blast_table <- function(directory){
+  blasttable <- as.data.frame(data.table::fread(directory, header = FALSE))
+  names(blasttable) <- c("Sequence", "Accession", "Length", "PercentMatch", "nMistmatch", "nGap", "Start", "End", "evalue", "bitscore", "ReferenceID", "Sample", "AssignmentMethod")
+  blasttable <- add_taxa_to_blast(blasttable)
+  blasttable$taxa <- blasttable$taxa[,1]
+  return(blasttable)
+}
+
+species_phy <- function(blast){
+  otu <- build_otu_table(blast)
+  head(otu)
+  tax <- build_tax_table2(otu)
+  head(tax)
+  phylo <- phyloseq(otu, tax, metadata)
+}
+
+build_tax_table2 <- function(otutable){
+  refs <- taxa_names(otutable)
+  tax = getTaxonomy(refs, sqlFile = "nameNode.sqlite", desiredTaxa =
+                    c("superkingdom", "kingdom", "phylum", "class", "order",
+                      "family","genus", "species"))
+  TaxTable = data.frame(tax)
+  TaxTable.m <- as.matrix(TaxTable)
+  taxtable <- tax_table(TaxTable.m)
+  taxa_names(taxtable) <- refs
+  return(taxtable)
+}
+
+```
+Code for combined blast table
+```{r}
+combined_blast <- format_blast_table("~/Desktop/allblast_uniq.csv")
+phyloseq_all <- species_phy(combined_blast)
+saveRDS(phyloseq_all, "~/Desktop/allblast.RDS")
+allblast <- readRDS("~/Desktop/allblast.RDS")
+phyloseq_all <- merge_phyloseq(allblast, clin_phy)
+
+relative_phy <- function(phyloseq) {
+  otu <- otu_table(phyloseq)
+  get.rel.abund <- function(x) {x/sum(x, na.rm = FALSE)}
+  xR <- get.rel.abund(otu)
+  otu_table(phyloseq) <- xR
+  return(phyloseq)
+ }
+
+allR <- transform_sample_counts(phyloseq_all, function(x) x / sum(x))
+blastR <- transform_sample_counts(allblast, function(x) x / sum(x))
+
+sums <- as.data.frame(as.vector(sort(taxa_sums(allR))))
+
+ggplot(data=sums, aes(sums$`as.vector(sort(taxa_sums(allR)))`)) + geom_histogram(bins=300) + xlim(-.000005,.000005)
+ggplot(data=sums, aes(sums$`as.vector(sort(taxa_sums(allR)))`)) + geom_histogram(bins=300) + xlim(-.000005,.00000025)
+
+p2 <- plot_bar(allR, x="LibraryID", y="Abundance", fill="AssignmentMethod") + geom_col(aes(color=AssignmentMethod, fill=AssignmentMethod)) + ylab("Number of Reads") +guides(color="none")
+
+allRP <- topA(6168, allR)
+saveRDS(allRP, "~/Desktop/allR_top6168.RDS")
+p1 <- plot_bar(allRP, x="LibraryID", y="Abundance", fill="AssignmentMethod") + geom_col(aes(color=AssignmentMethod, fill=AssignmentMethod)) + ylab("Proportion of Reads")
+p1 <- plot_bar(allRP, x="LibraryID", y="Abundance", fill="phylum") + geom_col(aes(color=phylum, fill=phylum)) + ylab("Proportion of Reads")
+
+RP100 <- topA(100, allR)
+taxtable <- as.data.frame(tax_table(RP100))
+refs<-rownames(taxtable)
+assignmentmethod<-taxtable$AssignmentMethod
+taxtable2 <- build_tax_table2(refs, assignmentmethod)
+tax_table(RP100) <- taxtable2
+p1 <- plot_bar(RP100, x="LibraryID", y="Abundance", fill="genus") + geom_col(aes(color=genus, fill=genus)) + ylab("Proportion of Reads") + facet_grid(AssignmentMethod~.)
+
+blast40 <- topA(40, blastR)
+p1 <- plot_bar(blast40, x="LibraryID", y="Abundance", fill="genus") + geom_col(aes(color=genus, fill=genus)) + ylab("Proportion of Blast Reads")
+
+```
+Assessing 
+```{r}
+b_malassezia <- format_blast_table("~/Malassezia.csv")
+malassezia_phy <- species_phy(b_malassezia)
+p1 <- plot_bar(malassezia_phy, x="LibraryID", y="Abundance", fill="species") + geom_col(aes(color=species, fill=species))
+p2 <- plot_bar(malassezia_phy, x="LibraryID", y="Abundance", fill="SubjectID") + geom_col(aes(color=SubjectID, fill=SubjectID)) + facet_wrap(species~.)
+bitscore <- ggplot(b_malassezia, aes(x=taxa, y=bitscore)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+length <- ggplot(b_malassezia, aes(x=taxa, y=Length)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+pidentity <- ggplot(b_malassezia, aes(x=taxa, y=PercentMatch)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+coverage <- ggplot(b_malassezia, aes(x=Start)) + geom_histogram() + facet_wrap("taxa", scales="free")
+```
+subsetting top blast taxa:
+```{r}
+blast40 <- topA(40, blastR)
+top40 <- taxa_names(blast40)
+topblasts <- bigblast[bigblast$V11 %in% top40,]
+write.csv(topblasts, "~/Desktop/sub40.csv")
+subblast <- as.data.frame(data.table::fread("~/Desktop/sub40.csv"))
+subblast <- subblast[-c(1)]
+names(subblast) <- c("Sequence", "Accession", "Length", "Percent_Identity", "Mismatches", "Gaps", "Start", "End", "eValue", "Bitscore", "RefID", "Sample", "Assignment_DB")
+
+bitscore <- ggplot(subblast_t, aes(x=taxa, y=Bitscore)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+length <- ggplot(subblast_t, aes(x=taxa, y=Length)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+pidentity <- ggplot(subblast_t, aes(x=taxa, y=Percent_Identity)) + geom_boxplot() + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+coverage <- ggplot(subblast_t, aes(x=Start)) + geom_histogram() + facet_wrap("taxa", scales="free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+```

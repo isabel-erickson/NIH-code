@@ -1,0 +1,173 @@
+---
+title: "Figure_making"
+author: "Isabel Erickson"
+date: "5/4/2019"
+output: html_document
+---
+
+```{r}
+library(phyloseq);library(plyr);library(ggplot2);library(reshape2);library(stringr);library(gridExtra);library(dplyr);library(taxonomizr);library(RColorBrewer)
+```
+set up palette
+```{r}
+n <- 60
+qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+pie(rep(1,n), col=sample(col_vector, n))
+
+```
+
+Summary and pie chart of clinpath database
+```{r}
+clintax <- read.csv("~/Desktop/cp_v_kraken/all_clinpath_taxa.csv", header=TRUE)
+length(clintax$TaxID)
+length(levels(clintax$phylum))
+length(levels(clintax$species))
+
+df <- as.data.frame(clintax$phylum)
+names(df) <- "phylum"
+df["count"] <- 1
+df2 <- aggregate(df$count, by=list(df$phylum), FUN=sum)
+names(df2) <- c("phylum", "count")
+sort1.df2 <- df2[order(df2$count) , ]
+
+bp1 <- ggplot(sort1.df2, aes(x=reorder(phylum,-count), y=count, fill=phylum)) + geom_bar(width = 1, stat = "identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+bp <- ggplot(sort1.df2, aes(x="", y=count, fill=phylum)) + geom_bar(width = 1, stat = "identity") + theme(axis.text.x = element_text(size=12))
+
+sort1.df2$phylum <- factor(sort1.df2$phylum, levels = rev(as.character(sort1.df2$phylum)))
+
+pie <- ggplot(sort1.df2, aes("", count, fill = phylum)) +
+    geom_bar(width = 1, stat = "identity") +
+    coord_polar("y", start=0) +
+    labs(x = NULL, y = NULL, fill = NULL) +
+    theme_classic() +
+  scale_fill_manual(values = col_vector) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text(hjust = 0.5, color = "#666666"))
+```
+Viral pie chart
+```{r}
+cp_viral <- read.csv("~/Desktop/cp_virallist.csv", header=FALSE)
+refs <- cp_viral$V1
+taxnames <- cp_viral$V2
+tax = getTaxonomy(refs, sqlFile = "nameNode.sqlite", desiredTaxa = c("family"))
+
+tax2 <- as.data.frame(tax)
+tax2["count"] <- 1
+df2 <- aggregate(tax2$count, by=list(tax2$family), FUN=sum)
+names(df2) <- c("family", "count")
+sort1.df2 <- df2[order(df2$count) , ]
+
+bp1 <- ggplot(sort1.df2, aes(x=reorder(family,-count), y=count, fill=family)) + geom_bar(width = 1, stat = "identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+bp <- ggplot(sort1.df2, aes(x="", y=count, fill=family)) + geom_bar(width = 1, stat = "identity") + theme(axis.text.x = element_text(size=12))
+pie <- bp + coord_polar("y", start=0)
+
+sort1.df2$family <- factor(sort1.df2$family, levels = rev(as.character(sort1.df2$family)))
+
+pie <- ggplot(sort1.df2, aes("", count, fill = family)) +
+    geom_bar(width = 1, stat = "identity") +
+    coord_polar("y", start=0) +
+    labs(x = NULL, y = NULL, fill = NULL) +
+    theme_classic() +
+  scale_fill_manual(values = col_vector2) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text(hjust = 0.5, color = "#666666"))
+```
+fungi pie
+```{r}
+cp_fungi <- read.csv("~/Desktop/cp_fungilist.csv", header=FALSE)
+refs <- cp_fungi$V1
+taxnames <- cp_fungi$V2
+tax = getTaxonomy(refs, sqlFile = "nameNode.sqlite", desiredTaxa = c("phylum"))
+
+tax2 <- as.data.frame(tax)
+tax2["count"] <- 1
+df2 <- aggregate(tax2$count, by=list(tax2$phylum), FUN=sum)
+names(df2) <- c("phylum", "count")
+sort1.df2 <- df2[order(df2$count) , ]
+
+bp1 <- ggplot(sort1.df2, aes(x=reorder(phylum,-count), y=count, fill=phylum)) + geom_bar(width = 1, stat = "identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+bp <- ggplot(sort1.df2, aes(x="", y=count, fill=phylum)) + geom_bar(width = 1, stat = "identity") + theme(axis.text.x = element_text(size=12))
+pie <- bp + coord_polar("y", start=0)
+
+sort1.df2$phylum <- factor(sort1.df2$phylum, levels = rev(as.character(sort1.df2$phylum)))
+
+pie <- ggplot(sort1.df2, aes("", count, fill = phylum)) +
+    geom_bar(width = 1, stat = "identity") +
+    coord_polar("y", start=0) +
+    labs(x = NULL, y = NULL, fill = NULL) +
+    theme_classic() +
+  scale_fill_manual(values = c("deeppink3", "deepskyblue", "palegreen4", "royalblue", "yellow", "tan1", "palevioletred", "mediumturquoise", "lightblue", "limegreen", "seagreen2", "gray56", "chartreuse3", "cornflowerblue")) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text(hjust = 0.5, color = "#666666"))
+```
+kingdom pie
+```{r}
+kingdomdf <- as.data.frame(c("Virus", "Bacteria", "Fungi"))
+kingdomdf["count"] <- c(11380, 2355, 478)
+names(kingdomdf) <- c("kingdom", "count")
+
+kingpie <- ggplot(kingdomdf, aes("", count, fill = kingdom)) +
+    geom_bar(width = 1, stat = "identity") +
+    coord_polar("y", start=0) +
+    labs(x = NULL, y = NULL, fill = NULL) +
+    theme_classic() +
+  scale_fill_manual(values = c("mediumpurple", "indianred2","seagreen3")) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text(hjust = 0.5, color = "#666666"))
+```
+Amount of dm:
+```{r}
+ndm <- read.csv("~/Desktop/ndm.csv", header=TRUE)
+ndm2 <- ndm[-c(2:3)]
+melted <- melt(ndm2, id="LibraryID", measure=c("Low_quality", "Aligned", "Unaligned"))
+melted$variable <- factor(melted$variable, levels = c("Unaligned", "Aligned","Low_quality"))
+dmplot <- ggplot(melted, aes(x=LibraryID, y=value, fill=variable)) + geom_bar(stat="identity", position="fill") + scale_fill_manual(values = c("#8c6bb1", "#8c96c6", "#bfd3e6")) + labs(x="Healthy Controls", y="Proportion of Reads") + theme_minimal() + theme(axis.text.x = element_blank(), axis.ticks = element_blank())
+sum(ndm2$Unaligned)
+sum(ndm2$Aligned)
+sum(ndm2$Low_quality)
+
+dmchart <- read.csv("~/Desktop/krakenmetadata2.csv", header=TRUE)
+names(dmchart) <- c("LibraryID", "SubjectID", "SiteID", "Abx", "Aligned.with.Segre.Database", "Reads_after", "Total", "Unaligned1", "Unaligned", "Aligned.with.Supplemented.Database")
+melted <- melt(dmchart, id=c("LibraryID","SiteID"), measure=c("Aligned.with.Segre.Database", "Unaligned", "Aligned.with.Supplemented.Database"))
+melted$variable <- factor(melted$variable, levels = c("Unaligned", "Aligned.with.Supplemented.Database", "Aligned.with.Segre.Database", "SiteID"))
+dmplot <- ggplot(melted, aes(x=LibraryID, y=value, fill=variable)) + geom_bar(stat="identity", position="fill") + scale_fill_manual(values = c("#8c6bb1", "orchid2", "#8c96c6")) + labs(x="Healthy Controls", y="Proportion of Reads") + theme_minimal() + theme(axis.text.x = element_blank(), axis.ticks = element_blank(), axis.text.y = element_text(size=20), legend.text = element_text(size=20), axis.title = element_text(size=24), legend.title = element_text(size=20))
+```
+staph genomes
+```{r}
+staph <- read.csv("~/Desktop/staphgenometest.csv")
+staph <- staph[-c(3)]
+
+names(staph) <- c("Strain", "Present.in.Database", "Unaligned", "Multiply.Rejected", "Misaligned.to.Host", "Misaligned", "Aligned.to.Genus", "Aligned.to.Species", "Correctly.Aligned")
+
+staphmelt <- melt(staph, id="Strain", measure=c("Unaligned", "Multiply.Rejected", "Misaligned.to.Host", "Misaligned", "Aligned.to.Genus", "Aligned.to.Species", "Correctly.Aligned"))
+
+staphmelt$variable <- factor(staphmelt$variable, levels = c("Unaligned", "Misaligned.to.Host", "Misaligned", "Aligned.to.Genus", "Aligned.to.Species", "Correctly.Aligned","Multiply.Rejected"))
+
+staphmelt$Strain <- factor(staphmelt$Strain, levels = c("S. aureus", "S. capitis SK14", "S. epidermidis ATTC12228", "S. hominis SK119", "S. warneri L37603NZ", "S. capitis AYP1020", "S. epidermidis DAR1907", "S. epidermidis PM221", "S. hominis supsp. hominis K1", "S. warneri SG1", "S. lugdunensis NCTC990", "S. massiliensis S46"))
+
+staphplot <- ggplot(staphmelt, aes(x=Strain, y=value, fill=variable)) + geom_bar(stat="identity", position="fill") + scale_fill_brewer(palette = "PRGn") + labs(x="Staphylococcus Reference Genomes", y="Proportion of Reads") + theme_minimal() + theme(axis.text.x = element_text(angle = 90, hjust= 1, size=18))
+```
+
+```{r}
+topblast <- as.data.frame(data.table::fread("~/Desktop/top40blasttaxa.csv", header=TRUE))
+refs <- c("9615", "425264", "1636603")
+topblast <- topblast[topblast$RefID %in% refs,]
+
+coverage <- ggplot(topblast, aes(x=Start, fill= "lightseagreen")) + geom_histogram() + facet_wrap("taxa", scales="free") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=24), axis.text.y = element_text(size = 24), strip.text.x = element_text(size=24))
+
+ggsave(coverage, filename="coverage.pdf", path="~/Desktop/", width = 20, height = 6)
+```
+subsetting staph and coryne:
+```{r}
+staph <- subset(before)
+
+```

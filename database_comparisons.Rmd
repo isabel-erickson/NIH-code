@@ -1,0 +1,155 @@
+---
+title: "Database Comparisons"
+author: "Isabel Erickson"
+date: "6/27/2019"
+output: html_document
+---
+
+```{r, warning=FALSE, message=FALSE, error=FALSE}
+library(phyloseq);library(plyr);library(ggplot2);library(reshape2);library(stringr);library(gridExtra);library(dplyr);library(taxonomizr);library(RColorBrewer);library(zoo);library(readr);library(fs)
+```
+Goals for very preliminary analyses:
+
+* Determine whether the up-to-date Refseq database or the Skin-Focused database increase the number of reads mapped in these samples.
+* Determine whether the abundances of certain taxa differ based on which database is used to classify reads
+
+```{r, eval=FALSE}
+###### Load phyloseqs (generated using the script in the kraken tutorial that I shared with the lab)
+clinpath <- readRDS("~/Desktop/cpphylo.RDS")
+refseq <- readRDS("~/Desktop/refphylo.RDS")
+skinfocus <- readRDS("~/Desktop/skinphylo.RDS")
+metadata <- read.csv("~/Desktop/sample_data_dbs.csv", header=TRUE)
+snames <- metadata$SampleName
+metadata <- sample_data(metadata)
+sample_names(metadata) <- snames
+all <- merge_phyloseq(clinpath, refseq, skinfocus)
+sample_data(all) <- metadata
+sample_data(refseqR) <- metadata
+
+## transform to relative abundance
+clinpathR <- transform_sample_counts(clinpath, function(x) x / sum(x))
+refseqR <- transform_sample_counts(refseq, function(x) x / sum(x))
+skinfocusR <- transform_sample_counts(skinfocus, function(x) x / sum(x))
+allR <- merge_phyloseq(clinpathR, refseqR, skinfocusR)
+sample_data(allR) <- metadata
+```
+### Basic Plots
+
+First, I took a quick look at how the different databases are classifying reads at the kingdom level.
+```{r}
+### kingdom distribution by sample depending on db
+x1 <- tax_glom(allR, taxrank = "superkingdom")
+mx1 <- psmelt(x1)
+mx1$superkingdom <- factor(mx1$superkingdom, levels = c("Unclassified", "Eukaryota", "Bacteria", "Viruses", "Archaea"))
+kingdomplot2 <- ggplot(mx1, aes(x=LibraryID, y=Abundance, fill=superkingdom)) + geom_bar(stat="identity", position="fill") + scale_fill_brewer(palette = "Set2") + facet_grid(AssignmentDB~.) + theme(axis.text.x = element_text(angle = 45, hjust= 1, size=9)) + ylab("Proportion of Reads")
+kingdomplot2
+
+```
+I was asked for a figure showing how the proportion of Dark Matter changes based on site. I've shown that based on site characteristic and based on site. In the figure that shows each site, sites are arranged from dry to moist to sebaceous and to toenail sites.
+```{r}
+refglom <- tax_glom(refseqR, taxrank = "superkingdom")
+mrefglom <- psmelt(refglom)
+mrefglom$superkingdom <- factor(mrefglom$superkingdom, levels = c("Unclassified", "Eukaryota", "Bacteria", "Viruses", "Archaea"))
+kingdomplotref <- ggplot(mrefglom, aes(x=SiteChar, y=Abundance, fill=superkingdom)) + geom_bar(stat="identity", position="fill") + scale_fill_brewer(palette = "Set2") + theme(axis.text.x = element_text(angle = 45, hjust= 1, size=9)) + ylab("Proportion of Reads")
+kingdomplotref
+mrefglom$SiteChar <- factor(mrefglom$SiteChar, levels = c("Dry", "Moist", "Sebaceous", "Toenail"))
+kingdomplotref_site<- ggplot(mrefglom, aes(x=SiteID, y=Abundance, fill=superkingdom)) + geom_bar(stat="identity", position="fill") + scale_fill_brewer(palette = "Set2") + theme(axis.text.x = element_text(angle = 45, hjust= 1, size=9)) + ylab("Proportion of Reads")
+kingdomplotref_site
+```
+
+```{r}
+### comparing amount of dm
+unclin <- subset_taxa(clinpathR, superkingdom=="Unclassified")
+unref <- subset_taxa(refseqR, superkingdom=="Unclassified")
+unskin <- subset_taxa(skinfocusR, superkingdom=="Unclassified")
+
+
+### function doesn't work
+class_df <- function(phyloseq_vector, name_vector){
+  df <- data.frame(sample_names(phyloseq_vector[[1]]))
+  names(df) <- "Sample"
+  for (i in length(phyloseq_vector)){
+    phyloseq <- phyloseq_vector[[i]]
+    unclass <- subset_taxa(phyloseq, superkingdom=="Unclassified")
+    column <- as.data.frame(1-as.vector(sample_sums(unclass)))
+    names(column) <- name_vector[i]
+    df <- cbind(df, column)
+    print(head(df))
+  }
+  return(df)
+}
+unclassified <- unclass_df(c(clinpathR, refseqR, skinfocusR), c("Clinical Pathoscope", "Refseq", "Skin-Focused"))
+ggplot(added_df, aes(x=Database, y=Proportion, fill=Source, color=Source)) + geom_col() + ylim(0,1) + ylab("Proportion of Reads") + stat_summary()
+
+###Eukaryota abundance
+fungicp <- subset_taxa(clinpathR, superkingdom=="Eukaryota")
+fungiskin <- subset_taxa(skinfocusR, superkingdom=="Eukaryota")
+fungiref <- subset_taxa(refseqR, superkingdom=="Eukaryota")
+
+mx2plot <- ggplot(sort1.mx2, aes(x=reorder(genus,-Abundance), y=Abundance, fill=genus)) + geom_bar(stat = "identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1, size=10))
+
+### richness measurements affected by db?
+richness <- plot_richness(all, x="AssignmentDB", color="AssignmentDB") + xlab("Database Used to Assign Read Identity") + geom_boxplot()
+
+### Pruning Data
+
+tax_sums <- as.data.frame(taxa_sums(clinpath))
+names(tax_sums) <- "sum"
+medsum <- median(tax_sums$sum) ## 155.5
+meansum <- mean(tax_sums$sum) ## 657971.8
+
+#graph histogram to determine appropriate cutoff point
+ggplot(tax_sums, aes(sum)) + geom_histogram() + xlim(-100, 150) ##250?
+pruned <- filter_taxa(all, function(x) sum(x) > 500, TRUE)
+
+tax_sums <- as.data.frame(taxa_sums(refseq))
+names(tax_sums) <- "sum"
+medsum <- median(tax_sums$sum) ## 331
+meansum <- mean(tax_sums$sum) ## 180272.3
+
+#graph histogram to determine appropriate cutoff point
+ggplot(tax_sums, aes(sum)) + geom_histogram() + xlim(-100, 1000) ##250?
+
+tax_sums <- as.data.frame(taxa_sums(skinfocus))
+names(tax_sums) <- "sum"
+medsum <- median(tax_sums$sum) ## 331
+meansum <- mean(tax_sums$sum) ## 180272.3
+
+#graph histogram to determine appropriate cutoff point
+ggplot(tax_sums, aes(sum)) + geom_histogram() + xlim(-100, 1000) ##250?
+
+
+clin1 <- tax_glom(clinpath, taxrank = "genus")
+ref1 <- tax_glom(refseq, taxrank = "genus")
+skin1 <- tax_glom(skinfocus, taxrank = "genus")
+
+mx2 <- psmelt(allR)
+
+```
+
+```{r, include=FALSE}
+### Distance Plots
+braypcoa <- ordinate(all, method="PCoA", distance="bray")
+p <- plot_ordination(all, braypcoa, color="LibraryID", shape = "AssignmentDB")
+
+moist <- subset_samples(all, SiteChar=="Moist")
+seb <- subset_samples(all, SiteChar=="Sebaceous")
+dry <- subset_samples(all, SiteChar=="Dry")
+toe <- subset_samples(all, SiteChar=="Toenail")
+
+
+moistpcoa <- ordinate(moist, method="PCoA", distance="bray")
+mp <- plot_ordination(moist, moistpcoa, color="LibraryID", shape = "AssignmentDB")
+
+sebpcoa <- ordinate(seb, method="PCoA", distance="bray")
+sp <- plot_ordination(seb, sebpcoa, color="LibraryID", shape = "AssignmentDB")
+
+drypcoa <- ordinate(dry, method="PCoA", distance="bray")
+dp <- plot_ordination(dry, drypcoa, color="LibraryID", shape = "AssignmentDB")
+
+toepcoa <- ordinate(toe, method="PCoA", distance="bray")
+tp <- plot_ordination(toe, toepcoa, color="LibraryID", shape = "AssignmentDB")
+```
+On average, 26.9% of the reads from each sample were classified in these samples using the Clinical Pathocope database. 36.1% of reads were classified using the Skin-Focused database, and 41.0%  were classified using the Refseq database (Figure 1, attached).
+
+```
